@@ -1,4 +1,4 @@
-import { useContext, useEffect, useMemo, useState } from "react";
+import { useContext, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
 import { supabaseUntyped } from "../lib/supabase";
@@ -16,16 +16,16 @@ import { PageContext } from "../App";
 import { KPICard } from "../components/KPICard";
 
 type Stats = {
-  totalAdvancesMonth: number;
-  totalExpensesMonth: number;
-  totalFruitSpendMonth: number;
-  cashBalanceMonth: number;
-  totalWeightMonth: number;
+  totalAdvancesAllTime: number;
+  totalExpensesAllTime: number;
+  totalFruitSpendAllTime: number;
+  cashBalanceAllTime: number;
+  totalWeightAllTime: number;
   activeAgents: number;
   agentsWithOutstanding: number;
   outstandingDeliveries: number;
-  deliveredThisMonth: number;
-  totalReceivedThisMonth: number;
+  deliveredAllTime: number;
+  totalReceivedAllTime: number;
 };
 
 type AgentRow = {
@@ -157,35 +157,22 @@ function formatDate(dateString: string | null) {
   });
 }
 
-function getMonthRangeISO(now = new Date()) {
-  const first = new Date(now.getFullYear(), now.getMonth(), 1);
-  const next = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-  const last = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-
-  return {
-    firstDayISO: first.toISOString(),
-    firstDayNextISO: next.toISOString(),
-    firstDayYYYYMMDD: first.toISOString().split("T")[0],
-    lastDayYYYYMMDD: last.toISOString().split("T")[0],
-  };
-}
-
 export function Dashboard() {
   const { userRole } = useAuth();
   const { setCurrentPage } = useContext(PageContext);
   const navigate = useNavigate();
 
   const [stats, setStats] = useState<Stats>({
-    totalAdvancesMonth: 0,
-    totalExpensesMonth: 0,
-    totalFruitSpendMonth: 0,
-    cashBalanceMonth: 0,
-    totalWeightMonth: 0,
+    totalAdvancesAllTime: 0,
+    totalExpensesAllTime: 0,
+    totalFruitSpendAllTime: 0,
+    cashBalanceAllTime: 0,
+    totalWeightAllTime: 0,
     activeAgents: 0,
     agentsWithOutstanding: 0,
     outstandingDeliveries: 0,
-    deliveredThisMonth: 0,
-    totalReceivedThisMonth: 0,
+    deliveredAllTime: 0,
+    totalReceivedAllTime: 0,
   });
 
   const [outstandingAgents, setOutstandingAgents] = useState<OutstandingAgent[]>([]);
@@ -210,81 +197,83 @@ export function Dashboard() {
     setLoading(true);
     try {
       const now = new Date();
-      const { firstDayISO, firstDayNextISO } = getMonthRangeISO(now);
-
       const sevenDaysAgoISO = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
       const [
         agentsRes,
-        advancesMonthRes,
-        expensesMonthRes,
-        collectionsMonthRes,
+        advancesAllTimeRes,
+        expensesAllTimeRes,
+        collectionsAllTimeRes,
         allAdvancesRes,
         allCollectionsRes,
         ordersRes,
-        paymentsMonthRes,
+        paymentsAllTimeRes,
       ] = await Promise.all([
         supabaseUntyped.from("agents").select("id, full_name, status"),
-        supabaseUntyped
-          .from("cash_advances")
-          .select("amount")
-          .gte("advance_date", firstDayISO)
-          .lt("advance_date", firstDayNextISO),
-        supabaseUntyped
-          .from("agent_expenses")
-          .select("amount, expense_date")
-          .gte("expense_date", firstDayISO)
-          .lt("expense_date", firstDayNextISO),
+
+        // ✅ ALL TIME (no date filter)
+        supabaseUntyped.from("cash_advances").select("amount"),
+
+        // ✅ ALL TIME (no date filter)
+        supabaseUntyped.from("agent_expenses").select("amount, expense_date"),
+
+        // ✅ ALL TIME (no date filter)
         supabaseUntyped
           .from("fruit_collections")
-          .select("agent_id, weight_kg, total_amount_spent, collection_date")
-          .gte("collection_date", firstDayISO)
-          .lt("collection_date", firstDayNextISO),
+          .select("agent_id, weight_kg, total_amount_spent, collection_date"),
+
+        // Used for outstanding + alerts
         supabaseUntyped.from("cash_advances").select("agent_id, amount, advance_date"),
         supabaseUntyped.from("fruit_collections").select("agent_id, weight_kg, collection_date"),
+
         supabaseUntyped
           .from("orders")
           .select(
             "id, order_date, order_category, delivery_status, total_amount, amount_paid, balance_due, customers(full_name, delivery_address)"
           )
           .order("order_date", { ascending: false }),
-        supabaseUntyped
-          .from("payments")
-          .select("amount, payment_date")
-          .gte("payment_date", firstDayISO)
-          .lt("payment_date", firstDayNextISO),
+
+        // ✅ ALL TIME (no date filter)
+        supabaseUntyped.from("payments").select("amount, payment_date"),
       ]);
 
       if (agentsRes.error) throw agentsRes.error;
-      if (advancesMonthRes.error) throw advancesMonthRes.error;
-      if (expensesMonthRes.error) throw expensesMonthRes.error;
-      if (collectionsMonthRes.error) throw collectionsMonthRes.error;
+      if (advancesAllTimeRes.error) throw advancesAllTimeRes.error;
+      if (expensesAllTimeRes.error) throw expensesAllTimeRes.error;
+      if (collectionsAllTimeRes.error) throw collectionsAllTimeRes.error;
       if (allAdvancesRes.error) throw allAdvancesRes.error;
       if (allCollectionsRes.error) throw allCollectionsRes.error;
       if (ordersRes.error) throw ordersRes.error;
-      if (paymentsMonthRes.error) throw paymentsMonthRes.error;
+      if (paymentsAllTimeRes.error) throw paymentsAllTimeRes.error;
 
       const agents = (agentsRes.data ?? []) as AgentRow[];
       const activeAgents = agents.filter((a) => a.status === "ACTIVE").length;
 
-      const totalAdvancesMonth = ((advancesMonthRes.data ?? []) as { amount: number | string }[]).reduce(
+      const totalAdvancesAllTime = ((advancesAllTimeRes.data ?? []) as { amount: number | string }[]).reduce(
         (sum, a) => sum + toNumber(a.amount),
         0
       );
 
-      const totalExpensesMonth = ((expensesMonthRes.data ?? []) as ExpenseRow[]).reduce(
+      const totalExpensesAllTime = ((expensesAllTimeRes.data ?? []) as ExpenseRow[]).reduce(
         (sum, e) => sum + toNumber(e.amount),
         0
       );
 
-      const collectionsMonth = (collectionsMonthRes.data ?? []) as CollectionRow[];
-      const totalFruitSpendMonth = collectionsMonth.reduce((sum, c) => sum + toNumber(c.total_amount_spent ?? 0), 0);
-      const totalWeightMonth = collectionsMonth.reduce((sum, c) => sum + toNumber(c.weight_kg), 0);
+      const collectionsAllTime = (collectionsAllTimeRes.data ?? []) as CollectionRow[];
+      const totalFruitSpendAllTime = collectionsAllTime.reduce(
+        (sum, c) => sum + toNumber(c.total_amount_spent ?? 0),
+        0
+      );
+      const totalWeightAllTime = collectionsAllTime.reduce((sum, c) => sum + toNumber(c.weight_kg), 0);
 
-      const cashBalanceMonth = totalAdvancesMonth - (totalExpensesMonth + totalFruitSpendMonth);
+      const cashBalanceAllTime = totalAdvancesAllTime - (totalExpensesAllTime + totalFruitSpendAllTime);
 
       const allAdvances = (allAdvancesRes.data ?? []) as CashAdvanceRow[];
-      const allCollections = (allCollectionsRes.data ?? []) as { agent_id: string; weight_kg: number | string; collection_date: string }[];
+      const allCollections = (allCollectionsRes.data ?? []) as {
+        agent_id: string;
+        weight_kg: number | string;
+        collection_date: string;
+      }[];
 
       const agentAdvances = allAdvances.reduce((acc, adv) => {
         if (!acc[adv.agent_id]) acc[adv.agent_id] = { total: 0, lastDate: null as string | null };
@@ -313,7 +302,8 @@ export function Dashboard() {
           const lastCollectionDate = collections.lastDate ? new Date(collections.lastDate) : null;
 
           let lastActivity: Date | null = null;
-          if (lastAdvanceDate && lastCollectionDate) lastActivity = lastAdvanceDate > lastCollectionDate ? lastAdvanceDate : lastCollectionDate;
+          if (lastAdvanceDate && lastCollectionDate)
+            lastActivity = lastAdvanceDate > lastCollectionDate ? lastAdvanceDate : lastCollectionDate;
           else lastActivity = lastAdvanceDate || lastCollectionDate;
 
           return {
@@ -334,13 +324,10 @@ export function Dashboard() {
         (o) => o.delivery_status === "PENDING" || o.delivery_status === "PARTIALLY_DELIVERED"
       ).length;
 
-      const deliveredThisMonth = orders.filter((o) => {
-        const d = o.order_date;
-        return o.delivery_status === "DELIVERED" && d >= firstDayISO && d < firstDayNextISO;
-      }).length;
+      const deliveredAllTime = orders.filter((o) => o.delivery_status === "DELIVERED").length;
 
-      const payments = (paymentsMonthRes.data ?? []) as PaymentRow[];
-      const totalReceivedThisMonth = payments.reduce((sum, p) => sum + toNumber(p.amount), 0);
+      const payments = (paymentsAllTimeRes.data ?? []) as PaymentRow[];
+      const totalReceivedAllTime = payments.reduce((sum, p) => sum + toNumber(p.amount), 0);
 
       const pendingOrdersData: PendingOrder[] = orders
         .filter((o) => o.delivery_status === "PENDING" || o.delivery_status === "PARTIALLY_DELIVERED")
@@ -357,7 +344,7 @@ export function Dashboard() {
           delivery_address: o.customers?.delivery_address || null,
         }));
 
-      // Alerts
+      // Alerts (last 7 days logic stays the same)
       const alertsData: Alert[] = [];
 
       for (const agent of agents) {
@@ -379,7 +366,8 @@ export function Dashboard() {
 
         const agentData = outstandingData.find((a) => a.id === agent.id);
         if (agentData && agentData.total_advances > 0 && agentData.last_activity) {
-          const daysSinceActivity = (now.getTime() - new Date(agentData.last_activity).getTime()) / (1000 * 60 * 60 * 24);
+          const daysSinceActivity =
+            (now.getTime() - new Date(agentData.last_activity).getTime()) / (1000 * 60 * 60 * 24);
           if (daysSinceActivity >= 14) {
             alertsData.push({
               agent_id: agent.id,
@@ -392,16 +380,16 @@ export function Dashboard() {
       }
 
       setStats({
-        totalAdvancesMonth,
-        totalExpensesMonth,
-        totalFruitSpendMonth,
-        cashBalanceMonth,
-        totalWeightMonth,
+        totalAdvancesAllTime,
+        totalExpensesAllTime,
+        totalFruitSpendAllTime,
+        cashBalanceAllTime,
+        totalWeightAllTime,
         activeAgents,
         agentsWithOutstanding,
         outstandingDeliveries,
-        deliveredThisMonth,
-        totalReceivedThisMonth,
+        deliveredAllTime,
+        totalReceivedAllTime,
       });
 
       setPendingOrders(pendingOrdersData);
@@ -430,9 +418,7 @@ export function Dashboard() {
     );
   }
 
-  const { firstDayYYYYMMDD, lastDayYYYYMMDD } = getMonthRangeISO(new Date());
-
-  // ✅ Section 1: Orders & Receipts
+  // ✅ Orders & Receipts (All Time)
   const ordersAndReceiptsCards: CardDef[] = [
     {
       title: "Outstanding Deliveries",
@@ -443,59 +429,59 @@ export function Dashboard() {
       to: "/orders?status=OUTSTANDING",
     },
     {
-      title: "Delivered (This Month)",
-      value: stats.deliveredThisMonth,
+      title: "Delivered (All Time)",
+      value: stats.deliveredAllTime,
       icon: ShoppingCart,
       bgColor: "bg-green-600",
-      to: `/orders?status=DELIVERED&preset=this_month&from=${firstDayYYYYMMDD}&to=${lastDayYYYYMMDD}`,
+      to: `/orders?status=DELIVERED`,
     },
     {
-      title: "Total Received (This Month)",
-      value: `GH₵ ${stats.totalReceivedThisMonth.toFixed(2)}`,
+      title: "Total Received (All Time)",
+      value: `GH₵ ${stats.totalReceivedAllTime.toFixed(2)}`,
       subtext: "From all payments",
       icon: Wallet,
       bgColor: "bg-blue-600",
-      to: `/orders?preset=this_month&from=${firstDayYYYYMMDD}&to=${lastDayYYYYMMDD}`,
+      to: `/orders`,
     },
   ];
 
-  // ✅ Section 2: Everything else (ONE section only)
+  // ✅ Operations Overview (All Time)
   const operationsCards: CardDef[] = [
     {
-      title: "Total Advances (This Month)",
-      value: `GH₵ ${stats.totalAdvancesMonth.toFixed(2)}`,
+      title: "Total Advances (All Time)",
+      value: `GH₵ ${stats.totalAdvancesAllTime.toFixed(2)}`,
       icon: DollarSign,
       bgColor: "bg-brand-orange",
-      to: `/cash-advances?preset=this_month&from=${firstDayYYYYMMDD}&to=${lastDayYYYYMMDD}`,
+      to: `/cash-advances`,
     },
     {
-      title: "Total Expenses (This Month)",
-      value: `GH₵ ${stats.totalExpensesMonth.toFixed(2)}`,
+      title: "Total Expenses (All Time)",
+      value: `GH₵ ${stats.totalExpensesAllTime.toFixed(2)}`,
       icon: DollarSign,
       bgColor: "bg-red-600",
-      to: `/expenses?preset=this_month&from=${firstDayYYYYMMDD}&to=${lastDayYYYYMMDD}`,
+      to: `/expenses`,
     },
     {
-      title: "Cash Balance (This Month)",
-      value: `GH₵ ${stats.cashBalanceMonth.toFixed(2)}`,
+      title: "Cash Balance (All Time)",
+      value: `GH₵ ${stats.cashBalanceAllTime.toFixed(2)}`,
       subtext: "Advances − (Expenses + Total Amount Spent on fruit)",
       icon: TrendingUp,
-      bgColor: stats.cashBalanceMonth >= 0 ? "bg-brand-primary" : "bg-red-700",
-      to: `/cash-balance/details?preset=this_month&from=${firstDayYYYYMMDD}&to=${lastDayYYYYMMDD}`,
+      bgColor: stats.cashBalanceAllTime >= 0 ? "bg-brand-primary" : "bg-red-700",
+      to: `/cash-balance/details`,
     },
     {
-      title: "Amount Spent on Fruit (This Month)",
-      value: `GH₵ ${stats.totalFruitSpendMonth.toFixed(2)}`,
+      title: "Amount Spent on Fruit (All Time)",
+      value: `GH₵ ${stats.totalFruitSpendAllTime.toFixed(2)}`,
       icon: Apple,
       bgColor: "bg-green-600",
-      to: `/fruit-spend/details?preset=this_month&from=${firstDayYYYYMMDD}&to=${lastDayYYYYMMDD}`,
+      to: `/fruit-spend/details`,
     },
     {
-      title: "Total Weight (This Month)",
-      value: `${stats.totalWeightMonth.toFixed(2)} kg`,
+      title: "Total Weight (All Time)",
+      value: `${stats.totalWeightAllTime.toFixed(2)} kg`,
       icon: Apple,
       bgColor: "bg-brand-secondary",
-      to: `/fruit-collections?preset=this_month&from=${firstDayYYYYMMDD}&to=${lastDayYYYYMMDD}`,
+      to: `/fruit-collections`,
     },
     {
       title: "Active Agents",
@@ -528,16 +514,15 @@ export function Dashboard() {
         </p>
       </div>
 
-      {/* ✅ ONLY TWO SEPARATIONS */}
       <DashboardSection
         title="Orders & Receipts"
-        description="Track customer orders, deliveries, and how much money has been received this month."
+        description="Track customer orders, deliveries, and how much money has been received overall."
         cards={ordersAndReceiptsCards}
       />
 
       <DashboardSection
         title="Operations Overview"
-        description="Everything else: cash movement, expenses, fruit buying, collections, and agent performance."
+        description="All-time view: cash movement, expenses, fruit buying, collections, and agent performance."
         cards={operationsCards}
       />
 
@@ -728,9 +713,7 @@ export function Dashboard() {
                         GH₵ {order.balance_due.toFixed(2)}
                       </span>
                     </p>
-                    {order.delivery_address && (
-                      <p className="text-xs text-gray-500 mt-1">📍 {order.delivery_address}</p>
-                    )}
+                    {order.delivery_address && <p className="text-xs text-gray-500 mt-1">📍 {order.delivery_address}</p>}
                   </div>
                 </div>
               ))}
