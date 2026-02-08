@@ -1,4 +1,4 @@
-import { useContext, useEffect, useMemo, useState } from "react";
+import { useContext, useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { supabase, supabaseUntyped } from "../lib/supabase";
 import { useAuth } from "../contexts/AuthContext";
@@ -71,6 +71,13 @@ function toExclusiveISO(dateToYYYYMMDD: string) {
   return end.toISOString();
 }
 
+function isValidYYYYMMDD(s: string) {
+  // simple guard: must look like 2026-02-08 and produce a valid date
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const d = new Date(`${s}T00:00:00.000Z`);
+  return !Number.isNaN(d.getTime());
+}
+
 export function CashAdvances() {
   const { userRole } = useAuth();
   const { setCurrentPage } = useContext(PageContext);
@@ -106,26 +113,27 @@ export function CashAdvances() {
 
   useEffect(() => setCurrentPage("cash-advances"), [setCurrentPage]);
 
-  useEffect(() => {
-    if (userRole?.role === "ADMIN") void loadAll();
-    else setLoading(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userRole]);
-
   // Keep URL synced (your dashboard links use from/to)
   useEffect(() => {
     const sp = new URLSearchParams(location.search);
     sp.set("from", dateFrom);
     sp.set("to", dateTo);
     if (!sp.get("preset")) sp.set("preset", "custom");
+
     navigate({ pathname: location.pathname, search: sp.toString() }, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dateFrom, dateTo]);
 
-  async function loadAll() {
+  const loadAll = useCallback(async () => {
     setLoading(true);
     try {
-      const fromISO = new Date(dateFrom).toISOString();
+      // ✅ Guard: do nothing if dates are not valid yet
+      if (!isValidYYYYMMDD(dateFrom) || !isValidYYYYMMDD(dateTo)) {
+        setRows([]);
+        return;
+      }
+
+      const fromISO = new Date(`${dateFrom}T00:00:00.000Z`).toISOString();
       const toExclusive = toExclusiveISO(dateTo);
 
       const [agentsRes, advancesRes] = await Promise.all([
@@ -146,12 +154,38 @@ export function CashAdvances() {
           .returns<CashAdvanceWithAgent[]>(),
       ]);
 
+      if (agentsRes.error) throw agentsRes.error;
+      if (advancesRes.error) throw advancesRes.error;
+
       setAgents(agentsRes.data ?? []);
       setRows(advancesRes.data ?? []);
+    } catch {
+      // keeping UI clean (same style you used)
+      setRows([]);
     } finally {
       setLoading(false);
     }
-  }
+  }, [dateFrom, dateTo]);
+
+  // ✅ Real-time filtering fix:
+  // Re-fetch automatically when dateFrom/dateTo changes (admin only).
+  const didInitRef = useRef(false);
+  useEffect(() => {
+    if (userRole?.role !== "ADMIN") {
+      setLoading(false);
+      return;
+    }
+
+    // First time: load once
+    if (!didInitRef.current) {
+      didInitRef.current = true;
+      void loadAll();
+      return;
+    }
+
+    // Subsequent changes (real-time):
+    void loadAll();
+  }, [userRole, loadAll]);
 
   function openCreate() {
     setMode("create");
@@ -208,7 +242,7 @@ export function CashAdvances() {
       }
 
       setShowModal(false);
-      await loadAll();
+      await loadAll(); // ✅ refresh with current date range
     } finally {
       setBusyId(null);
     }
@@ -222,7 +256,7 @@ export function CashAdvances() {
     try {
       const res = await supabaseUntyped.from("cash_advances").delete().eq("id", id).select("id");
       if (res.error) return;
-      await loadAll();
+      await loadAll(); // ✅ refresh with current date range
     } finally {
       setBusyId(null);
     }
@@ -238,7 +272,13 @@ export function CashAdvances() {
       const signed = String(r.signed_by ?? "").toLowerCase();
       const notes = String(r.notes ?? "").toLowerCase();
       const amountStr = String(toNumber(r.amount));
-      return agentName.includes(q) || method.includes(q) || signed.includes(q) || notes.includes(q) || amountStr.includes(q);
+      return (
+        agentName.includes(q) ||
+        method.includes(q) ||
+        signed.includes(q) ||
+        notes.includes(q) ||
+        amountStr.includes(q)
+      );
     });
   }, [rows, search]);
 
@@ -379,12 +419,10 @@ export function CashAdvances() {
           </table>
         </div>
 
-        <div className="px-4 sm:px-6 py-4 text-xs text-gray-500">
-          Tip: Scroll horizontally on small screens to see Actions.
-        </div>
+        <div className="px-4 sm:px-6 py-4 text-xs text-gray-500">Tip: Scroll horizontally on small screens to see Actions.</div>
       </div>
 
-      {/* ✅ Action Sheet (fixes the clipped dropdown issue) */}
+      {/* ✅ Action Sheet */}
       {actionRow && (
         <div className="fixed inset-0 z-[9999] bg-black/40 flex items-end sm:items-center justify-center p-4">
           <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl overflow-hidden">
@@ -432,9 +470,7 @@ export function CashAdvances() {
         <div className="fixed inset-0 z-[9998] bg-black/40 flex items-center justify-center p-4">
           <div className="w-full max-w-lg bg-white rounded-xl shadow-xl overflow-hidden">
             <div className="px-5 py-4 border-b flex items-center justify-between">
-              <h3 className="text-lg font-bold text-gray-900">
-                {mode === "create" ? "Add Cash Advance" : "Edit Cash Advance"}
-              </h3>
+              <h3 className="text-lg font-bold text-gray-900">{mode === "create" ? "Add Cash Advance" : "Edit Cash Advance"}</h3>
               <button onClick={() => setShowModal(false)} className="p-2 rounded-lg hover:bg-gray-100" aria-label="Close">
                 <X className="w-5 h-5" />
               </button>
