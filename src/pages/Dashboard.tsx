@@ -105,6 +105,18 @@ type CardDef = {
   to: string;
 };
 
+type DashboardSummaryRPC = {
+  totalAdvances?: number | string | null;
+  totalExpenses?: number | string | null;
+  totalFruitSpend?: number | string | null;
+  totalWeight?: number | string | null;
+  cashBalance?: number | string | null;
+  activeAgents?: number | string | null;
+  outstandingDeliveries?: number | string | null;
+  deliveredAllTime?: number | string | null;
+  totalReceivedAllTime?: number | string | null;
+};
+
 function toNumber(v: unknown): number {
   if (v === null || v === undefined) return 0;
   if (typeof v === "number") return Number.isFinite(v) ? v : 0;
@@ -150,11 +162,17 @@ function DashboardSection({
 
 function formatDate(dateString: string | null) {
   if (!dateString) return "Never";
-  return new Date(dateString).toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
+  const d = new Date(dateString);
+  if (Number.isNaN(d.getTime())) return "Never";
+  return d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
+}
+
+async function tryLoadSummaryFromRPC(): Promise<DashboardSummaryRPC | null> {
+  // If you created the SQL function earlier (dashboard_admin_summary), this will be FAST.
+  // If not created, it will error; we safely fall back to normal queries.
+  const res = await supabaseUntyped.rpc("dashboard_admin_summary");
+  if (res?.error) return null;
+  return (res?.data ?? null) as DashboardSummaryRPC | null;
 }
 
 export function Dashboard() {
@@ -180,93 +198,60 @@ export function Dashboard() {
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    setCurrentPage("dashboard");
-  }, [setCurrentPage]);
+  useEffect(() => setCurrentPage("dashboard"), [setCurrentPage]);
 
   useEffect(() => {
-    if (userRole?.role === "ADMIN") {
-      void loadAdminDashboard();
-    } else {
-      setLoading(false);
+    let alive = true;
+
+    async function run() {
+      if (userRole?.role === "ADMIN") {
+        await loadAdminDashboard(alive);
+      } else {
+        if (alive) setLoading(false);
+      }
     }
+
+    void run();
+    return () => {
+      alive = false;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userRole]);
 
-  const loadAdminDashboard = async () => {
+  const loadAdminDashboard = async (aliveFlag: boolean) => {
+    if (!aliveFlag) return;
     setLoading(true);
+
     try {
       const now = new Date();
-      const sevenDaysAgoISO = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      const sevenDaysAgoMs = sevenDaysAgo.getTime();
 
-      const [
-        agentsRes,
-        advancesAllTimeRes,
-        expensesAllTimeRes,
-        collectionsAllTimeRes,
-        allAdvancesRes,
-        allCollectionsRes,
-        ordersRes,
-        paymentsAllTimeRes,
-      ] = await Promise.all([
+      // 1) Try FAST path: RPC (if you created it in Supabase SQL editor)
+      //    This prevents totals showing wrong/zero due to large datasets/timeouts
+      const summary = await tryLoadSummaryFromRPC();
+
+      // 2) Load operational lists (needed for tables/alerts)
+      //    Keep these reasonably sized: orders list can get big, but you already use it.
+      const [agentsRes, allAdvancesRes, allCollectionsRes, ordersRes] = await Promise.all([
         supabaseUntyped.from("agents").select("id, full_name, status"),
-
-        // ✅ ALL TIME (no date filter)
-        supabaseUntyped.from("cash_advances").select("amount"),
-
-        // ✅ ALL TIME (no date filter)
-        supabaseUntyped.from("agent_expenses").select("amount, expense_date"),
-
-        // ✅ ALL TIME (no date filter)
-        supabaseUntyped
-          .from("fruit_collections")
-          .select("agent_id, weight_kg, total_amount_spent, collection_date"),
-
-        // Used for outstanding + alerts
         supabaseUntyped.from("cash_advances").select("agent_id, amount, advance_date"),
         supabaseUntyped.from("fruit_collections").select("agent_id, weight_kg, collection_date"),
-
         supabaseUntyped
           .from("orders")
           .select(
             "id, order_date, order_category, delivery_status, total_amount, amount_paid, balance_due, customers(full_name, delivery_address)"
           )
           .order("order_date", { ascending: false }),
-
-        // ✅ ALL TIME (no date filter)
-        supabaseUntyped.from("payments").select("amount, payment_date"),
       ]);
 
       if (agentsRes.error) throw agentsRes.error;
-      if (advancesAllTimeRes.error) throw advancesAllTimeRes.error;
-      if (expensesAllTimeRes.error) throw expensesAllTimeRes.error;
-      if (collectionsAllTimeRes.error) throw collectionsAllTimeRes.error;
       if (allAdvancesRes.error) throw allAdvancesRes.error;
       if (allCollectionsRes.error) throw allCollectionsRes.error;
       if (ordersRes.error) throw ordersRes.error;
-      if (paymentsAllTimeRes.error) throw paymentsAllTimeRes.error;
 
       const agents = (agentsRes.data ?? []) as AgentRow[];
       const activeAgents = agents.filter((a) => a.status === "ACTIVE").length;
-
-      const totalAdvancesAllTime = ((advancesAllTimeRes.data ?? []) as { amount: number | string }[]).reduce(
-        (sum, a) => sum + toNumber(a.amount),
-        0
-      );
-
-      const totalExpensesAllTime = ((expensesAllTimeRes.data ?? []) as ExpenseRow[]).reduce(
-        (sum, e) => sum + toNumber(e.amount),
-        0
-      );
-
-      const collectionsAllTime = (collectionsAllTimeRes.data ?? []) as CollectionRow[];
-      const totalFruitSpendAllTime = collectionsAllTime.reduce(
-        (sum, c) => sum + toNumber(c.total_amount_spent ?? 0),
-        0
-      );
-      const totalWeightAllTime = collectionsAllTime.reduce((sum, c) => sum + toNumber(c.weight_kg), 0);
-
-      const cashBalanceAllTime = totalAdvancesAllTime - (totalExpensesAllTime + totalFruitSpendAllTime);
 
       const allAdvances = (allAdvancesRes.data ?? []) as CashAdvanceRow[];
       const allCollections = (allCollectionsRes.data ?? []) as {
@@ -275,10 +260,75 @@ export function Dashboard() {
         collection_date: string;
       }[];
 
+      // 3) If RPC not available, compute totals using DB aggregations safely
+      //    (Still ok, but can be heavier than RPC. This avoids returning 0 due to partial/failed loads.)
+      let totalAdvancesAllTime = 0;
+      let totalExpensesAllTime = 0;
+      let totalFruitSpendAllTime = 0;
+      let totalWeightAllTime = 0;
+      let cashBalanceAllTime = 0;
+      let outstandingDeliveries = 0;
+      let deliveredAllTime = 0;
+      let totalReceivedAllTime = 0;
+
+      if (summary) {
+        totalAdvancesAllTime = toNumber(summary.totalAdvances);
+        totalExpensesAllTime = toNumber(summary.totalExpenses);
+        totalFruitSpendAllTime = toNumber(summary.totalFruitSpend);
+        totalWeightAllTime = toNumber(summary.totalWeight);
+        cashBalanceAllTime =
+          summary.cashBalance !== undefined && summary.cashBalance !== null
+            ? toNumber(summary.cashBalance)
+            : totalAdvancesAllTime - (totalExpensesAllTime + totalFruitSpendAllTime);
+
+        outstandingDeliveries = toNumber(summary.outstandingDeliveries);
+        deliveredAllTime = toNumber(summary.deliveredAllTime);
+        totalReceivedAllTime = toNumber(summary.totalReceivedAllTime);
+      } else {
+        // Fallback totals (ALL TIME)
+        // Use sum via Postgres when possible; here we keep your original approach but add guards.
+        const [advRes, expRes, colRes, payRes] = await Promise.all([
+          supabaseUntyped.from("cash_advances").select("amount"),
+          supabaseUntyped.from("agent_expenses").select("amount"),
+          supabaseUntyped.from("fruit_collections").select("weight_kg, total_amount_spent"),
+          supabaseUntyped.from("payments").select("amount"),
+        ]);
+
+        if (advRes.error) throw advRes.error;
+        if (expRes.error) throw expRes.error;
+        if (colRes.error) throw colRes.error;
+        if (payRes.error) throw payRes.error;
+
+        totalAdvancesAllTime = ((advRes.data ?? []) as { amount: number | string }[]).reduce(
+          (sum, a) => sum + toNumber(a.amount),
+          0
+        );
+
+        totalExpensesAllTime = ((expRes.data ?? []) as { amount: number | string }[]).reduce(
+          (sum, e) => sum + toNumber(e.amount),
+          0
+        );
+
+        const cols = (colRes.data ?? []) as { weight_kg: number | string; total_amount_spent: number | string | null }[];
+        totalFruitSpendAllTime = cols.reduce((sum, c) => sum + toNumber(c.total_amount_spent ?? 0), 0);
+        totalWeightAllTime = cols.reduce((sum, c) => sum + toNumber(c.weight_kg), 0);
+
+        cashBalanceAllTime = totalAdvancesAllTime - (totalExpensesAllTime + totalFruitSpendAllTime);
+
+        totalReceivedAllTime = ((payRes.data ?? []) as { amount: number | string }[]).reduce(
+          (sum, p) => sum + toNumber(p.amount),
+          0
+        );
+      }
+
+      // 4) Outstanding + last activity (same logic, but make date checks robust)
       const agentAdvances = allAdvances.reduce((acc, adv) => {
         if (!acc[adv.agent_id]) acc[adv.agent_id] = { total: 0, lastDate: null as string | null };
         acc[adv.agent_id].total += toNumber(adv.amount);
-        if (!acc[adv.agent_id].lastDate || new Date(adv.advance_date) > new Date(acc[adv.agent_id].lastDate!)) {
+
+        const advDate = new Date(adv.advance_date);
+        const accDate = acc[adv.agent_id].lastDate ? new Date(acc[adv.agent_id].lastDate!) : null;
+        if (!accDate || (Number.isFinite(advDate.getTime()) && advDate > accDate)) {
           acc[adv.agent_id].lastDate = adv.advance_date;
         }
         return acc;
@@ -287,7 +337,10 @@ export function Dashboard() {
       const agentCollections = allCollections.reduce((acc, col) => {
         if (!acc[col.agent_id]) acc[col.agent_id] = { total: 0, lastDate: null as string | null };
         acc[col.agent_id].total += toNumber(col.weight_kg);
-        if (!acc[col.agent_id].lastDate || new Date(col.collection_date) > new Date(acc[col.agent_id].lastDate!)) {
+
+        const colDate = new Date(col.collection_date);
+        const accDate = acc[col.agent_id].lastDate ? new Date(acc[col.agent_id].lastDate!) : null;
+        if (!accDate || (Number.isFinite(colDate.getTime()) && colDate > accDate)) {
           acc[col.agent_id].lastDate = col.collection_date;
         }
         return acc;
@@ -302,8 +355,7 @@ export function Dashboard() {
           const lastCollectionDate = collections.lastDate ? new Date(collections.lastDate) : null;
 
           let lastActivity: Date | null = null;
-          if (lastAdvanceDate && lastCollectionDate)
-            lastActivity = lastAdvanceDate > lastCollectionDate ? lastAdvanceDate : lastCollectionDate;
+          if (lastAdvanceDate && lastCollectionDate) lastActivity = lastAdvanceDate > lastCollectionDate ? lastAdvanceDate : lastCollectionDate;
           else lastActivity = lastAdvanceDate || lastCollectionDate;
 
           return {
@@ -312,7 +364,7 @@ export function Dashboard() {
             total_advances: advances.total,
             total_weight: collections.total,
             status: agent.status,
-            last_activity: lastActivity ? lastActivity.toISOString() : null,
+            last_activity: lastActivity && Number.isFinite(lastActivity.getTime()) ? lastActivity.toISOString() : null,
           };
         })
         .sort((a, b) => b.total_advances - a.total_advances);
@@ -320,14 +372,15 @@ export function Dashboard() {
       const agentsWithOutstanding = outstandingData.filter((a) => a.total_advances > 0).length;
 
       const orders = (ordersRes.data ?? []) as unknown as OrderRow[];
-      const outstandingDeliveries = orders.filter(
-        (o) => o.delivery_status === "PENDING" || o.delivery_status === "PARTIALLY_DELIVERED"
-      ).length;
 
-      const deliveredAllTime = orders.filter((o) => o.delivery_status === "DELIVERED").length;
+      // If RPC provided these, keep them; otherwise compute from orders list
+      if (!summary) {
+        outstandingDeliveries = orders.filter(
+          (o) => o.delivery_status === "PENDING" || o.delivery_status === "PARTIALLY_DELIVERED"
+        ).length;
 
-      const payments = (paymentsAllTimeRes.data ?? []) as PaymentRow[];
-      const totalReceivedAllTime = payments.reduce((sum, p) => sum + toNumber(p.amount), 0);
+        deliveredAllTime = orders.filter((o) => o.delivery_status === "DELIVERED").length;
+      }
 
       const pendingOrdersData: PendingOrder[] = orders
         .filter((o) => o.delivery_status === "PENDING" || o.delivery_status === "PARTIALLY_DELIVERED")
@@ -344,16 +397,21 @@ export function Dashboard() {
           delivery_address: o.customers?.delivery_address || null,
         }));
 
-      // Alerts (last 7 days logic stays the same)
+      // 5) Alerts (last 7 days)
       const alertsData: Alert[] = [];
 
       for (const agent of agents) {
-        const recentAdvances = allAdvances.filter(
-          (a) => a.agent_id === agent.id && new Date(a.advance_date) >= new Date(sevenDaysAgoISO)
-        );
-        const recentCollections = allCollections.filter(
-          (c) => c.agent_id === agent.id && new Date(c.collection_date) >= new Date(sevenDaysAgoISO)
-        );
+        const recentAdvances = allAdvances.filter((a) => {
+          if (a.agent_id !== agent.id) return false;
+          const t = new Date(a.advance_date).getTime();
+          return Number.isFinite(t) && t >= sevenDaysAgoMs;
+        });
+
+        const recentCollections = allCollections.filter((c) => {
+          if (c.agent_id !== agent.id) return false;
+          const t = new Date(c.collection_date).getTime();
+          return Number.isFinite(t) && t >= sevenDaysAgoMs;
+        });
 
         if (recentAdvances.length > 0 && recentCollections.length === 0) {
           alertsData.push({
@@ -366,18 +424,22 @@ export function Dashboard() {
 
         const agentData = outstandingData.find((a) => a.id === agent.id);
         if (agentData && agentData.total_advances > 0 && agentData.last_activity) {
-          const daysSinceActivity =
-            (now.getTime() - new Date(agentData.last_activity).getTime()) / (1000 * 60 * 60 * 24);
-          if (daysSinceActivity >= 14) {
-            alertsData.push({
-              agent_id: agent.id,
-              agent_name: agent.full_name,
-              reason: `No activity for ${Math.floor(daysSinceActivity)} days with outstanding advances`,
-              severity: "error",
-            });
+          const lastMs = new Date(agentData.last_activity).getTime();
+          if (Number.isFinite(lastMs)) {
+            const daysSinceActivity = (now.getTime() - lastMs) / (1000 * 60 * 60 * 24);
+            if (daysSinceActivity >= 14) {
+              alertsData.push({
+                agent_id: agent.id,
+                agent_name: agent.full_name,
+                reason: `No activity for ${Math.floor(daysSinceActivity)} days with outstanding advances`,
+                severity: "error",
+              });
+            }
           }
         }
       }
+
+      if (!aliveFlag) return;
 
       setStats({
         totalAdvancesAllTime,
@@ -398,7 +460,7 @@ export function Dashboard() {
     } catch {
       // keep UI clean; add toast if you want
     } finally {
-      setLoading(false);
+      if (aliveFlag) setLoading(false);
     }
   };
 
@@ -713,7 +775,9 @@ export function Dashboard() {
                         GH₵ {order.balance_due.toFixed(2)}
                       </span>
                     </p>
-                    {order.delivery_address && <p className="text-xs text-gray-500 mt-1">📍 {order.delivery_address}</p>}
+                    {order.delivery_address && (
+                      <p className="text-xs text-gray-500 mt-1">📍 {order.delivery_address}</p>
+                    )}
                   </div>
                 </div>
               ))}
