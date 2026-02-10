@@ -1,7 +1,7 @@
 import { useAuth } from '../contexts/AuthContext';
 import { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Shield } from 'lucide-react';
+import { LockIcon, Shield } from 'lucide-react';
 import { Logo } from './Logo';
 import {
   LayoutDashboard,
@@ -33,6 +33,7 @@ const navItems: NavItem[] = [
   { name: 'Orders & Receipts', icon: ShoppingCart, path: '/orders' },
   { name: 'Monthly Reconciliation', icon: FileText, path: '/reconciliation' },
   { name: 'Reports', icon: BarChart3, path: '/reports' },
+  { name: 'Change Password', icon: LockIcon, path: '/change-password' },
 ];
 
 export function Sidebar() {

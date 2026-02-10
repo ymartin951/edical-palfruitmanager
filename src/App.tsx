@@ -120,6 +120,7 @@ if (mustChangePassword) {
           <Route path="/fruit-collections" element={<FruitCollections />} />
           <Route path="/fruit-collections/new" element={<FruitCollectionForm />} />
           <Route path="/fruit-collections/:id/edit" element={<FruitCollectionForm />} />
+          <Route path="/change-password" element={<ChangePassword />} />
 
           <Route path="/orders" element={<Orders />} />
           <Route path="/orders/new" element={<OrderForm />} />
