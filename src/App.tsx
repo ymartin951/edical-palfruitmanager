@@ -1,202 +1,160 @@
-import React, { createContext, useMemo, useState } from "react";
-import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
-
-import { useAuth, AuthProvider } from "./contexts/AuthContext";
-import { ToastProvider } from "./contexts/ToastContext";
-
+import React, { useState, createContext } from 'react';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { ChangePassword } from "./pages/ChangePassword";
+import { ToastProvider } from './contexts/ToastContext';
+import { Layout } from './components/Layout';
+import { Login } from './pages/Login';
+import { Dashboard } from './pages/Dashboard';
+import { Agents } from './pages/Agents';
+import { AgentForm } from './pages/AgentForm';
+import AgentReport from './pages/AgentReport';
+import ExpensesBatchForm from './pages/ExpensesBatchForm';
+import { ExpenseEditForm } from './pages/ExpenseEditForm';
+import { Expenses } from './pages/Expenses';
+import { CashAdvances } from './pages/CashAdvances';
+import { CashAdvanceForm } from './pages/CashAdvanceForm';
+import { FruitCollections } from './pages/FruitCollections';
+import { FruitCollectionForm } from './pages/FruitCollectionForm';
+import { MonthlyReconciliation } from './pages/MonthlyReconciliation';
+import { Reports } from './pages/Reports';
+import { CashBalanceDetails } from './pages/CashBalanceDetails';
+import { FruitSpendDetails } from './pages/FruitSpendDetails';
+import { ConsolidatedReport } from "./pages/ConsolidatedReport";
+import { Orders } from './pages/Orders';
+import { OrderForm } from './pages/OrderForm';
+import { OrderDetails } from './pages/OrderDetails';
+import { OrderEdit } from './pages/OrderEdit';
+import { OrderReceipt } from './pages/OrderReceipt';
+import { OrderDeliveryNote } from './pages/OrderDeliveryNote';
+import { AdminUsers } from './pages/AdminUsers';
 import { IdleLogout } from "./components/IdleLogout";
 
-// Pages (adjust these imports to match your project)
-import { Login } from "./pages/Login";
-import { Dashboard } from "./pages/Dashboard";
-import { AgentDashboard } from "./pages/AgentDashboard";
-import { ChangePassword } from "./pages/ChangePassword";
 
-// If you already have these pages, keep them. If not, remove the routes.
-import { Agents } from "./pages/Agents";
-import { CashAdvances } from "./pages/CashAdvances";
-import { Expenses } from "./pages/Expenses";
-import { FruitCollections } from "./pages/FruitCollections";
-import { Orders } from "./pages/Orders";
 
-// --------------------
-// PageContext (you already use this in your pages)
-// --------------------
-type PageContextValue = {
+export const PageContext = createContext<{
   currentPage: string;
   setCurrentPage: (page: string) => void;
-};
-
-export const PageContext = createContext<PageContextValue>({
-  currentPage: "",
+}>({
+  currentPage: 'dashboard',
   setCurrentPage: () => {},
 });
 
-// --------------------
-// Auth Guards
-// --------------------
-function RequireAuth({ children }: { children: React.ReactNode }) {
-  const auth: any = useAuth();
-  const location = useLocation();
-
-  // Support different AuthContext shapes safely:
-  const loading = Boolean(auth?.loading ?? auth?.isLoading ?? false);
-  const session = auth?.session ?? auth?.user ?? null;
+function AppContent() {
+  const { user, loading, isAdmin, mustChangePassword } = useAuth();
+  const [currentPage, setCurrentPage] = useState('dashboard');
 
   if (loading) {
     return (
-      <div className="min-h-[50vh] flex items-center justify-center">
-        <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-green-600" />
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-green-600 mx-auto"></div>
+          <p className="mt-4 text-gray-600">Loading...</p>
+        </div>
       </div>
     );
   }
 
-  if (!session) {
-    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  if (!user) {
+    return <Login />;
   }
 
-  return <>{children}</>;
+  // Force co-admin to change password before using the app
+if (mustChangePassword) {
+  return (
+    <Layout>
+      <Routes>
+        <Route path="/change-password" element={<ChangePassword />} />
+        <Route path="*" element={<Navigate to="/change-password" replace />} />
+      </Routes>
+    </Layout>
+  );
 }
 
-function RequireAdmin({ children }: { children: React.ReactNode }) {
-  const auth: any = useAuth();
-  const role = auth?.userRole?.role;
 
-  // If your app uses must_change_password flag:
-  const mustChange = Boolean(auth?.userRole?.must_change_password);
-
-  // If admin must change password, force it (but allow /change-password itself)
-  const location = useLocation();
-  if (role === "ADMIN" && mustChange && location.pathname !== "/change-password") {
-    return <Navigate to="/change-password" replace />;
+  // Single-tenant: only ADMIN users may use the app.
+  if (!isAdmin) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
+        <div className="max-w-md w-full bg-white rounded-2xl shadow-xl p-6 text-center">
+          <h1 className="text-xl font-bold text-gray-900">Access denied</h1>
+          <p className="mt-2 text-gray-600">
+            Your account is not set up as an admin for this system. Please ask the system owner to add you as a co-admin.
+          </p>
+          <p className="mt-4 text-sm text-gray-500">
+            (In Supabase: add a row for your user in <code className="px-1 py-0.5 bg-gray-100 rounded">user_agent_map</code> with role <code className="px-1 py-0.5 bg-gray-100 rounded">ADMIN</code>.)
+          </p>
+        </div>
+      </div>
+    );
   }
 
-  if (role !== "ADMIN") return <Navigate to="/login" replace />;
-
-  return <>{children}</>;
-}
-
-function RequireAgent({ children }: { children: React.ReactNode }) {
-  const auth: any = useAuth();
-  const role = auth?.userRole?.role;
-
-  if (role !== "AGENT") return <Navigate to="/login" replace />;
-
-  return <>{children}</>;
-}
-
-// --------------------
-// App Shell (inside providers, so IdleLogout can read useAuth())
-// --------------------
-function AppShell() {
-  const [currentPage, setCurrentPage] = useState("");
-
-  const pageCtx = useMemo(() => ({ currentPage, setCurrentPage }), [currentPage]);
+  const defaultRoute = '/dashboard';
 
   return (
-    <PageContext.Provider value={pageCtx}>
-      {/* ✅ Auto-logout ADMIN after inactivity (change minutes if you want) */}
-      <IdleLogout timeoutMinutes={10} excludePaths={["/login", "/change-password"]} />
+    <PageContext.Provider value={{ currentPage, setCurrentPage }}>
+      <Layout>
+        <Routes>
+          <Route path="/" element={<Navigate to={defaultRoute} replace />} />
+          <Route path="/dashboard" element={<Dashboard />} />
 
-      <Routes>
-        {/* Public */}
-        <Route path="/login" element={<Login />} />
-        <Route path="/change-password" element={<ChangePassword />} />
+          {/* Admin-only modules */}
+          <Route path="/change-password" element={<ChangePassword />} />
 
-        {/* Protected */}
-        <Route
-          path="/dashboard"
-          element={
-            <RequireAuth>
-              <RequireAdmin>
-                <Dashboard />
-              </RequireAdmin>
-            </RequireAuth>
-          }
-        />
+          <Route path="/admins" element={<AdminUsers />} />
+<Route path="/change-password" element={<ChangePassword />} />
 
-        <Route
-          path="/agent-dashboard"
-          element={
-            <RequireAuth>
-              <RequireAgent>
-                <AgentDashboard />
-              </RequireAgent>
-            </RequireAuth>
-          }
-        />
 
-        {/* Optional admin routes (keep only the ones you actually have) */}
-        <Route
-          path="/agents"
-          element={
-            <RequireAuth>
-              <RequireAdmin>
-                <Agents />
-              </RequireAdmin>
-            </RequireAuth>
-          }
-        />
-        <Route
-          path="/cash-advances"
-          element={
-            <RequireAuth>
-              <RequireAdmin>
-                <CashAdvances />
-              </RequireAdmin>
-            </RequireAuth>
-          }
-        />
-        <Route
-          path="/expenses"
-          element={
-            <RequireAuth>
-              <RequireAdmin>
-                <Expenses />
-              </RequireAdmin>
-            </RequireAuth>
-          }
-        />
-        <Route
-          path="/fruit-collections"
-          element={
-            <RequireAuth>
-              <RequireAdmin>
-                <FruitCollections />
-              </RequireAdmin>
-            </RequireAuth>
-          }
-        />
-        <Route
-          path="/orders/*"
-          element={
-            <RequireAuth>
-              <RequireAdmin>
-                <Orders />
-              </RequireAdmin>
-            </RequireAuth>
-          }
-        />
+          <Route path="/agents" element={<Agents />} />
+          
+          <Route path="/agents/new" element={<AgentForm />} />
+          <Route path="/agents/:id/edit" element={<AgentForm />} />
+          <Route path="/agents/:id/report" element={<AgentReport />} />
+          <Route path="/agents/:id/expenses/new" element={<ExpensesBatchForm />} />
 
-        {/* Default */}
-        <Route path="/" element={<Navigate to="/login" replace />} />
-        <Route path="*" element={<Navigate to="/login" replace />} />
-      </Routes>
+          <Route path="/expenses" element={<Expenses />} />
+          <Route path="/agent-expenses/:id/edit" element={<ExpenseEditForm />} />
+
+          <Route path="/cash-advances" element={<CashAdvances />} />
+          <Route path="/cash-advances/new" element={<CashAdvanceForm />} />
+          <Route path="/cash-advances/:id/edit" element={<CashAdvanceForm />} />
+
+          <Route path="/fruit-collections" element={<FruitCollections />} />
+          <Route path="/fruit-collections/new" element={<FruitCollectionForm />} />
+          <Route path="/fruit-collections/:id/edit" element={<FruitCollectionForm />} />
+          <Route path="/change-password" element={<ChangePassword />} />
+
+          <Route path="/orders" element={<Orders />} />
+          <Route path="/orders/new" element={<OrderForm />} />
+          <Route path="/orders/:id" element={<OrderDetails />} />
+          <Route path="/orders/:id/edit" element={<OrderEdit />} />
+          <Route path="/orders/:id/receipt" element={<OrderReceipt />} />
+          <Route path="/orders/:id/delivery-note" element={<OrderDeliveryNote />} />
+           <Route path="/reports/consolidated" element={<ConsolidatedReport />} />
+
+          <Route path="/cash-balance/details" element={<CashBalanceDetails />} />
+          <Route path="/fruit-spend/details" element={<FruitSpendDetails />} />
+
+          <Route path="/reconciliation" element={<MonthlyReconciliation />} />
+          <Route path="/reports" element={<Reports />} />
+          
+          <Route path="*" element={<Navigate to={defaultRoute} replace />} />
+        </Routes>
+      </Layout>
     </PageContext.Provider>
   );
 }
 
-// --------------------
-// Main App
-// --------------------
-export default function App() {
+function App() {
   return (
     <BrowserRouter>
-      <ToastProvider>
-        <AuthProvider>
-          <AppShell />
-        </AuthProvider>
-      </ToastProvider>
+      <AuthProvider>
+        <ToastProvider>
+          <AppContent />
+        </ToastProvider>
+      </AuthProvider>
     </BrowserRouter>
   );
 }
+
+export default App;
