@@ -31,7 +31,7 @@ const navItems: NavItem[] = [
   { name: 'Expenses', icon: Receipt, path: '/expenses' },
   { name: 'Fruit Collections', icon: Apple, path: '/fruit-collections' },
   { name: 'Orders & Receipts', icon: ShoppingCart, path: '/orders' },
-  { name: 'Monthly Reconciliation', icon: FileText, path: '/reconciliation' },
+  //{ name: 'Monthly Reconciliation', icon: FileText, path: '/reconciliation' },
   { name: 'Reports', icon: BarChart3, path: '/reports' },
   { name: 'Change Password', icon: LockIcon, path: '/change-password' },
 ];
